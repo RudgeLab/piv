@@ -1,77 +1,18 @@
 import numpy as np
+from numpy.fft import fft2,ifft2,fftshift
 from scipy import ndimage
 import matplotlib.pyplot as plt
+import matplotlib.mlab as mlab
+from scipy.signal import correlate2d
+import math
+import infotheory
 
-
-def entropy(hgram, ax):
-    '''
-    Entropy H(X) of one variable given joint histogram
-
-    hgram = joint histogram (2d array)
-
-    ax = axis over which to sum histogram to compute marginal distribution
-
-    returns: entropy value
-    '''
-    # Convert bins counts to probability values
-    pxy = hgram / float(np.sum(hgram))
-    px = np.sum(pxy, axis=ax) # marginal for x over y
-    nzs = px > 0 # Only non-zero pxy values contribute to the sum
-    ex = -np.sum(px[nzs] * np.log2(px[nzs]))
-    return ex
-
-def mutual_information(hgram):
-    '''
-    Mutual information I(X,Y) for joint histogram
-
-    hgram = joint histogram (2d array) 
-    '''
-    # Convert bins counts to probability values
-    pxy = hgram / float(np.sum(hgram))
-    px = np.sum(pxy, axis=1) # marginal for x over y
-    py = np.sum(pxy, axis=0) # marginal for y over x
-    px_py = px[:, None] * py[None, :] # Broadcast to multiply marginals
-    # Now we can do the calculation using the pxy, px_py 2D arrays
-    nzs = pxy > 0 # Only non-zero pxy values contribute to the sum
-    return np.sum(pxy[nzs] * np.log2(pxy[nzs] / px_py[nzs]))
-    
-def joint_entropy(hgram):
-    '''
-    Joint entropy H(X,Y) for joint histogram
-
-    hgram = joint histogram (2d array) 
-
-    returns: joint entropy value
-    '''
-    # Convert bins counts to probability values
-    pxy = hgram / float(np.sum(hgram))
-    # Now we can do the calculation using the pxy, px_py 2D arrays
-    nzs = pxy > 0 # Only non-zero pxy values contribute to the sum
-    #print pxy[nzs]
-    return -np.sum(pxy[nzs] * np.log2(pxy[nzs]))
-
-def conditional_entropy(hgram, ax):
-    '''
-    Conditional entropy H(Y|X) for joint histogram
-
-    hgram = joint histogram (2d array) 
-
-    ax = axis over which to sum to compute marginal distribution of X
-
-    returns: joint entropy value
-    '''
-    # Convert bins counts to probability values
-    pxy = hgram / float(np.sum(hgram))
-    px = np.sum(pxy, axis=ax) # marginal for x over y
-    je = joint_entropy(hgram)
-    # Now we can do the calculation using the pxy, px_py 2D arrays
-    nzs = px > 0 # Only non-zero pxy values contribute to the sum
-    ex = -np.sum(px[nzs] * np.log2(px[nzs]))
-    return je - ex 
+plotting = True
+save_images = False
 
 
 
-def mutual_info_offset(im1,im2, w,h, vx_max, vy_max, px,py, nbins)
+def mutual_info_offset(im1,im2, w,h, vx_max, vy_max, px1,py1, px2,py2, nbins):
     '''
     Compute mutual information between regions in image pairs over a range of
     offsets. This gives an estimate of the structural similarity between the
@@ -84,7 +25,8 @@ def mutual_info_offset(im1,im2, w,h, vx_max, vy_max, px,py, nbins)
     vx_max,vy_max = tuple giving the maximum offset in each image dimension, in each
     direction
 
-    px,py = position of centre
+    px,py = position of centre in im1
+    px2,py2 = position of centre in im2
 
     nbins = number of bins to use for image histograms
 
@@ -92,21 +34,36 @@ def mutual_info_offset(im1,im2, w,h, vx_max, vy_max, px,py, nbins)
     -vy_max,vy_max]
     '''
 
-    vw = vmax[0]*2 + 1
-    vh = vmax[1]*2 + 1
-    hy = np.zeros((vw,vh))
+
+    vw = vx_max*2 + 1
+    vh = vy_max*2 + 1
+
     mi = np.zeros((vw,vh))
-    im1_roi = im1[px-w:px+w, py-h:py+h]
+    di = np.zeros((vw,vh))
+    hy = np.zeros((vw,vh))
+    hz = np.zeros((vw,vh))
+    im1_roi = im1[px1-w:px1+w+1, py1-h:py1+h+1]
     for vx in range(-vx_max,vx_max+1):
         for vy in range(-vx_max,vy_max+1):
-            im2_roi = im2[px+vx-w:px+w+vx, py+vy-h:py+h+vy]
+            im2_roi_offset = im2[px2-w+vx:px2+w+vx+1, py2-h+vy:py2+h+vy+1]
+            im2_roi = im2[px2-w:px2+w+1, py2-h:py2+h+1]
+            hgram_offset, xedges, yedges = np.histogram2d( im1_roi.ravel(), \
+                                                    im2_roi_offset.ravel(), \
+                                                    bins=nbins, \
+                                                    range=[(0,2**16),(0,2**16)])
+            hy_val_offset = infotheory.entropy(hgram_offset, ax=0)
             hgram, xedges, yedges = np.histogram2d( im1_roi.ravel(), \
                                                     im2_roi.ravel(), \
                                                     bins=nbins, \
                                                     range=[(0,2**16),(0,2**16)])
-            mutinf = mutual_information(hgram)
+            hy_val = infotheory.entropy(hgram, ax=0)
+            hy[vx+vx_max,vy+vy_max] = hy_val_offset
+            mutinf = infotheory.mutual_information(hgram_offset)
             mi[vx+vx_max,vy+vy_max] = mutinf
-    return mi
+            hz[vx+vx_max,vy+vy_max] = mutinf - infotheory.joint_entropy(hgram) + infotheory.joint_entropy(hgram_offset)
+            di[vx+vx_max,vy+vy_max] = np.sum((im2_roi-im2_roi.mean())*(im1_roi-im1_roi.mean()), axis=(0,1))
+            #np.var(im2_roi-im1_roi, axis=(0,1))# + np.var(im2_roi, axis=(0,1)) + np.var(im1_roi, axis=(0,1))
+    return mi,hy,di,hz
 
 def find_peak(arr):
     '''
@@ -114,151 +71,206 @@ def find_peak(arr):
 
     returns: (x,y) position of peak
     '''
+    w,h = arr.shape
+    ww = (w-1)/2
+    hh = (h-1)/2
+
     pk = arr>0.99*np.max(arr,axis=(0,1))
-    pkx,pky = np.meshgrid(np.arange(-15,16), np.arange(-15,16))
-    x = np.sum(zx*pk)/np.sum(pk)
-    y = np.sum(zy*pk)/np.sum(pk)
+    pky,pkx = np.meshgrid(np.arange(-ww,ww+1), np.arange(-hh,hh+1))
+    x = np.sum(pkx*pk)/np.sum(pk)
+    y = np.sum(pky*pk)/np.sum(pk)
     return x,y
 
 # Compute conditional entropy at different uniform velocities
-def analyze_iterative(im1,im2, vmax, p0, ns, ofname=None):
-    hy = np.zeros((ns,31,31))
-    mi = np.zeros((ns,31,31))
+def track_cond_entropy(im1,im2, vx_max,vy_max, px1,py1, gs, nbins=256, ofname=None):
+    fullw,fullh = im1.shape
+    mi = np.zeros((ns,vx_max*2+1,vy_max*2+1))
     z = np.zeros((ns,2))
     #dI = np.zeros((ns,1))
     
-    px2,py2 = px,py
+    # Start at same position in 1st and 2nd image
+    px2,py2 = px1,py1
 
-    for s in range(ns):
-        gs = 2**(5-s)
-        cim1 = im1[px-gs:px+gs, py-gs:py+gs]
-        for vx in range(-15,16):
-            for vy in range(-15,16):
-                #print gi,gj,vx,vy
-                # Compute conditional entropy
-                cim2 = im2[px2+vx-gs:px2+gs+vx, py2+vy-gs:py2+gs+vy]
-                hgram, xedges, yedges = np.histogram2d(cim1.ravel(), cim2.ravel(), bins=256, range=[(0,2**16),(0,2**16)])
-                #ce = conditional_entropy(hgram, ax=1)
-                #hv[s,vx+15,vy+15] = -ce
-                mutinf = mutual_information(hgram)
-                mi[s,vx+15,vy+15] = mutinf
-        #Find peak and compute mean velocity estimate
-        ehv = np.exp2(mi[s,:,:])
-        pk = ehv>0.99*np.max(ehv,axis=(0,1))
-        zx,zy = np.meshgrid(np.arange(-15,16), np.arange(-15,16))
-        zxpk = np.sum(zx*pk)/np.sum(pk)
-        zypk = np.sum(zy*pk)/np.sum(pk)
+
+    # Compute mutual information between image regions over offset grid
+    mi_grid,hy_grid,di_grid,hz_grid = mutual_info_offset(im1,im2, \
+                                                            gs,gs, \
+                                                            vx_max,vy_max, \
+                                                            px1,py1, \
+                                                            px2,py2, \
+                                                            nbins)
+    # Original ROIs
+    im1_roi = im1[px1-gs:px1+gs,py1-gs:py1+gs]
+    im2_roi = im2[px1-gs:px1+gs,py1-gs:py1+gs]
+
+        if np.max(hy_grid, axis=(0,1))<1.0:
+            # Entropy too low, probably background
+            zxpk,zypk = 0,0
+        else:
+            #Find peak in I(X,Y) to compute mean velocity estimate
+            zxpk,zypk = find_peak(mi_grid/hy_grid)
+
+        # Estimated velocity
         z[s,:] = [zxpk,zypk]
-        dcim2 = im2[px2-gs+zypk:px2+gs+zypk, py2-gs+zxpk:py2+gs+zxpk]
-        #dI[s] = np.mean(dcim2-cim1, axis=(0,1))
 
-        hgram, xedges, yedges = np.histogram2d(cim1.ravel(), dcim2.ravel(), bins=256, range=[(0,2**16),(0,2**16)])
-        hy = entropy(hgram, ax=0)
-        print hy
-        
-        #mutinf = mutual_information(hgram)
-        mutinf = mutual_information(hgram)/entropy(hgram, ax=0)
-        print mutinf
-        
-        print z[s,:]
-        print gs
-        print px2,py2
-#        plt.imshow(mi[s,:,:])
+        # Increment velocity
+        px2 = px2 + zxpk
+        py2 = py2 + zypk
+            
+        # Shifted 2nd image ROI
+        im2_roi_shifted = im2[px2-gs:px2+gs,py2-gs:py2+gs]
 
+        # Compute mutual info and variance on registered ROI
+        mi_grid2,hy_grid2,di_grid2,hz_grid2 = mutual_info_offset(im1,im2, gs,gs, vx_max,vy_max, px1,py1, px2,py2, nbins)
+
+        # Compute some measures on the result
         '''
-        plt.subplot(241)
-        cim2 = im2[px2-gs:px2+gs, py2-gs:py2+gs]
-        diffim = cim2-cim1
-        clim = [np.min(diffim), np.max(diffim)]
-        plt.imshow(cim2-cim1, clim=clim)
-        plt.colorbar()
-        
-        plt.subplot(242)
-        plt.imshow(dcim2-cim1, clim=clim)
-        plt.colorbar()        
-        
-        plt.subplot(243)
-        plt.imshow(mi[s,:,:])
-        plt.colorbar()
-        
-        plt.subplot(244)
-        plt.hist((dcim2).ravel(), bins=20)
-
-        plt.subplot(245)
-        plt.imshow(cim1)
-        plt.colorbar()   
-        
-        plt.subplot(246)
-        plt.imshow(cim2)
-        plt.colorbar() 
-        
-        plt.subplot(247)
-        plt.imshow(dcim2)
-        plt.colorbar() 
-        
-        plt.subplot(248)
-        plt.hist(cim1.ravel(), bins=20)
+        diffim = im2_roi_shifted-im1_roi
+        plt.hist(diffim.ravel(), bins=20, normed=True)
+        mu = np.mean(im2_roi_shifted-im1_roi, axis=(0,1))
+        variance = 1.0e3
+        sigma = math.sqrt(variance)
+        x = np.linspace(mu - 3*sigma, mu + 3*sigma, 100)
+        plt.plot(x,mlab.normpdf(x, mu, sigma))
         '''
-        
-        px2 = px2 + zypk
-        py2 = py2 + zxpk
+        im2_roi = im2[px2-32:px2+32,py2-32:py2+32]
+        im1_roi_crop = np.zeros(im1.shape)
+        im1_roi_crop[px1-32:px1+32,py1-32:py1+32] = im1[px1-32:px1+32,py1-32:py1+32]
+        im1_roi_crop = im1_roi_crop[px1-32:px1+32,py1-32:py1+32] 
+
+        diffim = im2_roi - im1_roi_crop
+        mdiffim = diffim - np.mean(diffim, axis=(0,1))/0.5
+        probcell = (1.0/math.sqrt(2.0*math.pi*2048.0)) * np.exp( -mdiffim*mdiffim*0.5/2048.0 )
+
+        #C = correlate2d(im1_roi_crop,im2_roi)
+        my,mx = np.meshgrid(np.arange(-32,32), np.arange(-32,32))
+        r = np.sqrt(my*my+mx*mx)
+        phi = np.abs(np.arctan2(my,mx))
+        fim2_roi = fft2(im2_roi-im2_roi.mean(axis=(0,1)))
+        fim1_roi_crop = fft2(im1_roi_crop-im1_roi_crop.mean(axis=(0,1)))
+        fC = fim1_roi_crop*fim2_roi.conj()
+        fC = (fim1_roi_crop-fim2_roi)*(fim1_roi_crop-fim2_roi).conj()
+        fC_filt = fC
+        fC_filt[np.where(r>500)] = 0
+        C = fftshift(ifft2(fC_filt))
+        Cxy = mi_grid2[vx_max,vy_max]
+        #print 'Cxy = ',Cxy
+
+        # Plot stuff
+        if plotting:
+            plt.subplot(131)
+            #plt.imshow(di_grid)
+            plt.cla()
+            #p = np.polyfit(((mi_grid2-hy_grid2)).ravel(), np.log2(di_grid2.ravel()), deg=1)
+            #Cxy = p[1]
+            my,mx = np.meshgrid(np.arange(-vx_max,vx_max+1), np.arange(-vy_max,vy_max+1))
+            r = np.sqrt(my*my+mx*mx)
+            phi = np.arctan(my,mx)
+            idx = np.where(r>=0)
+            ploty = hz_grid[idx] #((mi_grid2[idx]-hy_grid2[idx])).ravel()
+            plotx = r[idx]
+            #plt.plot(plotx, ploty, 'r.')
+#            plotx = (r[idx].ravel()) #np.log2(di_grid2.ravel())
+            ploty = mi_grid[idx] #(np.absolute(C[32-vx_max:32+vx_max+1,32-vy_max:32+vy_max+1]/(64*64))).ravel()
+            #plt.plot(plotx, ploty, 'g.')
+
+            plt.imshow(hz_grid)
+
+            #print 'Slope :', p
+            #print 'Cmin = ', p[1]
+            #print 'Cmax = ', p[1] - p[0]
+            #plt.xlim([-1,0])
+            #plt.imshow(mdiffim)
+            #plt.ylim([0,8])
+            #plt.imshow(im1_roi_crop)
+            #if s==0:
+            #    plt.colorbar()
+
+
+        if plotting:
+            plt.subplot(133)
+            plt.imshow(im1_roi)
+            #plt.imshow(im1_roi, interpolation='nearest')
+            #plt.imshow(mi_grid-hy_grid)
+            #if s==0:
+            #    plt.colorbar()
+            #plt.subplot(133)
+            #plt.imshow(im2_roi_shifted-im1_roi, interpolation='nearest')
+            #plt.imshow(di_grid2)
+            plt.subplot(132)
+            plt.cla()
+            #plt.imshow(np.absolute(fftshift(fC)))
+            #plotx = r[32-vx_max:32+vx_max+1,32-vy_max:32+vy_max+1]
+            plotx = mi_grid-hy_grid
+            ploty = (np.absolute(C[32-vx_max:32+vx_max+1,32-vy_max:32+vy_max+1]/(64*64))) # + (mi_grid-hy_grid)*2.7
+            #mploty = [np.mean(ploty[np.where(phi==p)]) for p in phi.ravel()]
+            #H,xedges,yedges = np.histogram2d(phi.ravel(), ploty.ravel(), bins=(16,32))
+            #idx = np.where((r>2)*(r<10))
+            #plt.plot(phi[idx], ploty[idx], '.')
+            #plt.plot(plotx.ravel(), ploty.ravel(), '.')
+            plt.imshow(mi_grid)
+            ax = plt.gca()
+            ax.set_aspect('auto')
+            #plt.plot(plotx.ravel(), ploty.ravel(), '.')
+            #plt.ylim([0,20])
+            #if s==0:
+            #    plt.colorbar()
+        #print z[s,:]
+        #print gs
+        #print px2,py2
+
+        if plotting:
+            plt.show()
+            plt.pause(0.1)
+
+        if save_images:
+            plt.imsave(ofname, im2_roi_shifted)
  
-    print 'px2 = ', px2
-    print 'py2 = ', py2
-    #plt.imsave(ofname, cim1)
-    return z,mutinf,hy
+    return px2,py2,Cxy,im2_roi_shifted
 
 
 
 
 def main():
-    # Number of scales to descend
-    ns = 2
-    # Number of time points
-    nt = 60
-    # Grid dimensions and spacing for regions of interest
-    gx,gy = 4,4
-    gw,gh = 16,16
+    if plotting:
+        plt.ion()
+        plt.figure(figsize=(12,4))
 
-    # Top left corner of grid of ROIs
-    px0,py0 = 1200,600
 
     # Load images
-    fnamebase = 'weiner-17-12-07-17-56/step-%05d'
-    fnamebase = '/Users/timrudge/CavendishMicroscopy/10.01.16/Pos0000/Frame%04dStep%04d'
-    #fnamebase = '/Volumes/MICROSCOPYD/Microscopy/09.01.16/Pos0001/Frame%04dStep%04d'
 
-    fname = fnamebase + '.png'
-    fname = fnamebase + '.tif'
-    im1 = [plt.imread(fname%(2,100+i*2)).astype(np.float32) for i in range(nt)]
-    im2 = [plt.imread(fname%(2,102+i*2)).astype(np.float32) for i in range(nt)]
+    fnamebase = sys.argv[1]
+    fname = fnamebase + sys.argv[2]
 
-    #im1b = [plt.imread(fname%(0,100+i*2)).astype(np.float32) for i in range(nt)]
-    #im2b = [plt.imread(fname%(0,102+i*2)).astype(np.float32) for i in range(nt)]
+    startframe = sys.argv[3]
+    nframes = sys.argv[4]
+    im1 = [plt.imread(fname%(startframe+i*2)).astype(np.float32) for i in range(nt)]
+    im2 = [plt.imread(fname%(startframe+2+i*2)).astype(np.float32) for i in range(nt)]
 
     w,h = im1[0].shape
     w,h = im1[0].shape
 
+    # Grid dimensions and spacing for regions of interest
+    gx,gy = 2,2
+    gw,gh = w/(gx-1),h/gy
 
-    print w,h
+    print "Image dimensions: ",w,h
 
+    print "Image intensity range:"
     print np.max(im1), np.min(im1)
     print np.max(im2), np.min(im2)
 
 
     # Filter images to remove noise
     from scipy.ndimage.filters import gaussian_filter
-    im1 = [gaussian_filter(im1[i],3) for i in range(nt)]
-    #im1b = [gaussian_filter(im1b[i],3) for i in range(nt)]
-    im2 = [gaussian_filter(im2[i],3) for i in range(nt)]
-    #im2b = [gaussian_filter(im2b[i],3) for i in range(nt)]
+    im1 = [gaussian_filter(im1[i],1) for i in range(nt)]
+    im2 = [gaussian_filter(im2[i],1) for i in range(nt)]
 
 
     # Compute velocity and position of ROIs based on maximum mutual information translation
     pos = np.zeros((gx,gy,nt,2))
-    zz = np.zeros((gx,gy,ns,2,nt))
-    mutinf = np.zeros((gx,gy,nt))
-    entropy = np.zeros((gx,gy,nt))
+    Cxy = np.zeros((gx,gy,nt))
+    roi = np.zeros((gx,gy,nt,64,64))
 
     # Set initial grid positions
     for ix in range(gx):
@@ -268,50 +280,33 @@ def main():
         print '------------ Step %d ---------'%i
         for ix in range(gx):
             for iy in range(gy):
-                print ix,iy
-                #fig = plt.figure(figsize=(12,3))
-                #im1 = plt.imread(fname%(2,100+i*2)).astype(np.float32)
-                #im2 = plt.imread(fname%(2,102+i*2)).astype(np.float32)
-                ofname = 'grid4_4/dcim2-pos%d_%d_step%04d.tif'%(pos[ix,iy,0,0],pos[ix,iy,0,1],i)
-                z,mi,hy = analyze_iterative(im1[i], im2[i], int(pos[ix,iy,i,1]), int(pos[ix,iy,i,0]), ns, ofname)
-                print z.shape
-                zz[ix,iy,:,:,i] = z
-                mutinf[ix,iy,i] = mi
-                entropy[ix,iy,i] = hy
-                pos[ix,iy,i+1,:] = pos[ix,iy,i,:] + np.sum(zz[ix,iy,:,:,i], axis=0)
-        #pos[:,:,i+1,:] = pos[:,:,i,:] + np.sum(zz[:,:,:,:,i], axis=(0,1,2))
-        print 'pos[i+1] =', pos[ix,iy,i+1,:]
-        #plt.draw()
-        #plt.savefig('mi-%04d.pdf'%i)
-        #plt.close(fig)
+                ofname = 'gridtesting/im2-pos%d_%d_step%04d.tif'%(pos[ix,iy,0,0],pos[ix,iy,0,1],i)
+                px = int(pos[ix,iy,i,0])
+                py = int(pos[ix,iy,i,1])
+                px2,py2,C,im2_roi = analyze_iterative(im1[i], im2[i], \
+                                            7, 7, \
+                                            px,
+                                            py, \
+                                            ns, nbins=256, ofname=ofname)
+                pos[ix,iy,i+1,:] = [px2,py2]
+                Cxy[ix,iy,i+1] = C
+                roi[ix,iy,i+1,:,:] = im2_roi
+                #plt.ylim([0,30])
+                #if i==0:
+                #    plt.colorbar()
+                print 'vel = ', px2-px, py2-py
+
+        #print 'pos[i+1] =', pos[ix,iy,i+1,:]
 
     pos.tofile('pos.np', sep=',')
-    zz.tofile('z.np', sep=',')
-    mutinf.tofile('mutinf.np', sep=',')
-    entropy.tofile('entropy.np', sep=',')
-
-    '''
-    plt.ion()
-    plt.close('all')
-    plt.figure(figsize=(16,16))
-    i=9
-    im1 = plt.imread(fname%(2,100+i*2)).astype(np.float32)
-    im2 = plt.imread(fname%(2,100)).astype(np.float32)
-    plt.imshow(im1[500:900,1050:1500]-im2[500:900,1050:1500])
-
-    plt.plot(-1050+pos[:,:,:i,0].reshape(gx*gy,i).T, -500+pos[:,:,:i,1].reshape(gx*gy,i).T, 'k-')
-    plt.xlim(0,500)
-    plt.ylim(0,500)
-    #plt.show()
-    print pos[0,5,0,:]
-
+    roi.tofile('roi.np')
     plt.figure()
-    for i in range(1,12):
-        for j in range(1,12):
-            plt.plot(mutinf[i,j,:])
-
-    '''
-
+    plt.plot((Cxy[0,0,1:]))
+    plt.pause(20)
+    #if plotting:
+        #plt.pause(20)
 
 
-main()
+# Run analysis
+if __name__ == "__main__": 
+    main()
